@@ -1,6 +1,6 @@
-<h1 align="center">
+<p align="center">
   <img src="logo.png" width="240px" height="240px" alt="flick">
-</h1>
+</p>
 
 ## flick - focus apps with keyboard shortcuts
 
