@@ -910,12 +910,17 @@ class FlickApp(rumps.App):
             lower = appName.lower()
             app = self.appCache.get(lower)
             if app is None or app.isTerminated():
-                app = next((
+                matches = [
                     a for a in _workspace.runningApplications()
                     if a.localizedName()
                     and lower in a.localizedName().lower()
                     and a.activationPolicy() == 0
-                ), None)
+                ]
+                app = min(
+                    matches,
+                    key=lambda a: len(a.localizedName()),
+                    default=None,
+                )
                 if app:
                     self.appCache[lower] = app
             if not app:
@@ -990,12 +995,19 @@ class FlickApp(rumps.App):
 
 
 try:
-    from importlib.metadata import version as _pkgVersion
+    try:
+        from importlib.metadata import version as _pkgVersion
+    except ImportError:
+        from importlib_metadata import version as _pkgVersion
     _VERSION = _pkgVersion('flick')
 except Exception:
-    _toml = (Path(__file__).parent / 'pyproject.toml').read_text()
-    _VERSION = re.search(
-        r'^version\s*=\s*"([^"]+)"', _toml, re.M).group(1)
+    _toml = Path(__file__).parent / 'pyproject.toml'
+    if _toml.exists():
+        _VERSION = re.search(
+            r'^version\s*=\s*"([^"]+)"',
+            _toml.read_text(), re.M).group(1)
+    else:
+        _VERSION = 'unknown'
 
 _HELP = '''flick - focus apps by name with global keyboard shortcuts
 
