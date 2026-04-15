@@ -7,7 +7,7 @@ name = "flick"
 version = "0.1.0"
 description = "Focus macOS apps with keyboard shortcuts."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.7"
 license = { file = "LICENSE" }
 dependencies = [
     "rumps",
@@ -15,6 +15,7 @@ dependencies = [
     "pyobjc-framework-Cocoa",
     "pyobjc-framework-Quartz",
     "pyobjc-framework-ApplicationServices",
+    "importlib_metadata>=1.0; python_version < '3.8'",
 ]
 keywords = ["macos", "window", "focus", "accessibility", "mouse"]
 classifiers = [
