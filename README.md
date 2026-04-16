@@ -85,6 +85,16 @@ flick -h           # show help
 flick --version    # show version
 ```
 
+### Configuration
+
+flick saves your configuration in:
+
+```
+~/.config/flick/shortcuts.json
+```
+
+Changes are autosaved to this file.
+
 ### Development
 
 For local development:
