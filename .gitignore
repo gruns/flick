@@ -1,4 +1,6 @@
 *~
-.claude
-__pycache__
-.devcontainer
+dist/
+.claude/
+__pycache__/
+.devcontainer/
+flick.egg-info/
