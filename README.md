@@ -4,9 +4,9 @@
 
 ## flick - focus apps with keyboard shortcuts
 
-Is Emacs the only app you use? The only app installed on your Mac? Of course it is.
+Is Emacs the only app you use? Is it the only app installed on your Mac? Of course it is.
 
-But if you're one of the few lost souls who uses multiple apps, plural? Who don't use Emacs to call their mothers and change flat tires?
+But if you're one of those few lost souls who instead use multiple apps, plural? Who don't use Emacs to call their mothers and change flat tires?
 
 flick is for you.
 
