@@ -2,7 +2,7 @@
   <img src="logo.png" width="240px" height="240px" alt="flick">
 </p>
 
-## flick - focus apps with keyboard shortcuts
+## flick - switch apps with keyboard shortcuts
 
 Is Emacs the only app you use? Is it the only app installed on your Mac? Of course it is.
 
@@ -14,7 +14,7 @@ flick is for you.
   <img src="screenshot.png" width="640px" height="auto" alt="flick example screenshot">
 </h1>
 
-`flick` focuses macOS apps with keyboard shortcuts. It makes switching apps really fast.
+`flick` switches macOS apps with global keyboard shortcuts. It makes switching apps really fast.
 
 Press key. Focus app. That's it.
 
