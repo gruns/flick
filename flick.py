@@ -11,7 +11,6 @@ import time as _time
 from pathlib import Path
 
 import rumps
-from pynput import keyboard
 from AppKit import (
     NSApp, NSWindow, NSView, NSTextField, NSButton, NSScrollView, NSBox,
     NSBackingStoreBuffered, NSWindowStyleMaskTitled, NSWindowStyleMaskClosable,
@@ -147,12 +146,6 @@ def _cgNumForAxWin(win):
         return None
     return int(winID.value)
 
-_CTRL_KEYS  = {keyboard.Key.ctrl,  keyboard.Key.ctrl_l,  keyboard.Key.ctrl_r}
-_ALT_KEYS   = {keyboard.Key.alt,   keyboard.Key.alt_l,   keyboard.Key.alt_r}
-_SHIFT_KEYS = {keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r}
-_CMD_KEYS   = {keyboard.Key.cmd,   keyboard.Key.cmd_l,   keyboard.Key.cmd_r}
-MODIFIER_KEYS = _CTRL_KEYS | _ALT_KEYS | _SHIFT_KEYS | _CMD_KEYS
-
 
 def loadConfig():
     if CONFIG_PATH.exists():
@@ -182,56 +175,41 @@ def hotkeyToStr(hotkey):
 
 
 class HotkeyRecorder:
-    '''Records a keyboard shortcut when activated.'''
+    '''Records a keyboard shortcut via the app's existing CGEventTap.'''
 
     def __init__(self, callback):
         self.callback = callback
         self.recording = False
-        self.modifiers = set()
-        self.listener = None
+        self._app = None
 
     def start(self):
         self.recording = True
-        self.modifiers = set()
-        self.listener = keyboard.Listener(
-            on_press=self.onPress,
-            on_release=self.onRelease)
-        self.listener.start()
+        if self._app:
+            self._app._recordingHandler = self._handle
 
     def stop(self):
         self.recording = False
-        if self.listener:
-            self.listener.stop()
-            self.listener = None
+        if self._app:
+            self._app._recordingHandler = None
 
-    def onPress(self, key):
-        if not self.recording:
+    def _handle(self, nsEv):
+        flags = int(nsEv.modifierFlags()) & _MOD_MASK
+        char = (nsEv.charactersIgnoringModifiers() or '').lower()
+        if not char:
             return
-        if key in MODIFIER_KEYS:
-            self.modifiers.add(key)
-        else:
-            hasModifiers = len(self.modifiers) > 0
-            if key == keyboard.Key.esc and not hasModifiers:
-                self.stop()
-                self.callback(None)
-                return
-            hotkey = {
-                'ctrl': any(k in self.modifiers for k in
-                    [keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r]),
-                'alt': any(k in self.modifiers for k in
-                    [keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r]),
-                'shift': any(k in self.modifiers for k in
-                    [keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r]),
-                'cmd': any(k in self.modifiers for k in
-                    [keyboard.Key.cmd, keyboard.Key.cmd_l, keyboard.Key.cmd_r]),
-                'key': key.char if hasattr(key, 'char') and key.char else str(key).replace('Key.', ''),
-            }
+        if nsEv.keyCode() == 53 and not flags:
             self.stop()
-            self.callback(hotkey)
-
-    def onRelease(self, key):
-        if key in MODIFIER_KEYS:
-            self.modifiers.discard(key)
+            self.callback(None)
+            return
+        hotkey = {
+            'ctrl': bool(flags & _MOD_CTRL),
+            'alt': bool(flags & _MOD_ALT),
+            'shift': bool(flags & _MOD_SHIFT),
+            'cmd': bool(flags & _MOD_CMD),
+            'key': char,
+        }
+        self.stop()
+        self.callback(hotkey)
 
 
 class ButtonTarget(objc.lookUpClass('NSObject')):
@@ -309,6 +287,7 @@ class ShortcutRow(NSView):
         self.delegate = delegate
         self.shortcut = shortcut
         self.recorder = HotkeyRecorder(self.onHotkeyRecorded)
+        self.recorder._app = delegate.appDelegate
         self.targets = []
 
         y = 0
@@ -701,6 +680,9 @@ def _makeTapCallback(app):
             return event
         try:
             nsEv = NSEvent.eventWithCGEvent_(event)
+            if app._recordingHandler:
+                app._recordingHandler(nsEv)
+                return None
             flags = int(nsEv.modifierFlags()) & _MOD_MASK
             char = (nsEv.charactersIgnoringModifiers() or '').lower()
             if not char:
@@ -738,6 +720,7 @@ class FlickApp(rumps.App):
         ]
 
         self.configWindow = None
+        self._recordingHandler = None
         self._eventTap = None
         self._tapSource = None
         self._tapCallback = None
