@@ -997,8 +997,8 @@ _HELP = '''flick - focus apps by name with global keyboard shortcuts
 Usage: flick [options]
 
 Options:
-  -h, --help     show this message and exit
-  --version      show version and exit
+  -h, --help      show this message and exit
+  -v, --version   show version and exit
 
 Flick runs as a menu bar app. Click the 🎯 icon in the menu bar to
 configure global keyboard shortcuts that focus any app and center the
@@ -1010,7 +1010,7 @@ def main():
     if '-h' in sys.argv or '--help' in sys.argv:
         print(_HELP)
         return
-    if '--version' in sys.argv:
+    if '-v' in sys.argv or '--version' in sys.argv:
         print(f'flick {_VERSION}')
         return
 
