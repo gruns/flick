@@ -147,6 +147,69 @@ def _cgNumForAxWin(win):
     return int(winID.value)
 
 
+def _baseCharForKeyCode(keyCode):
+    '''Return the base character for a keycode using UCKeyTranslate,
+    ignoring all modifiers. Works with any keyboard layout.'''
+    import ctypes as ct
+    try:
+        _c = ct.cdll.LoadLibrary(
+            '/System/Library/Frameworks/Carbon.framework/Carbon')
+        _f = ct.cdll.LoadLibrary(
+            '/System/Library/Frameworks/CoreFoundation'
+            '.framework/CoreFoundation')
+        _c.TISCopyCurrentKeyboardLayoutInputSource.restype = ct.c_void_p
+        _c.TISGetInputSourceProperty.restype = ct.c_void_p
+        _c.TISGetInputSourceProperty.argtypes = [ct.c_void_p, ct.c_void_p]
+        _f.CFDataGetBytePtr.restype = ct.c_void_p
+        _f.CFDataGetBytePtr.argtypes = [ct.c_void_p]
+        _f.CFRelease.argtypes = [ct.c_void_p]
+        src = _c.TISCopyCurrentKeyboardLayoutInputSource()
+        if not src:
+            return ''
+        propKey = ct.c_void_p.in_dll(
+            _c, 'kTISPropertyUnicodeKeyLayoutData').value
+        data = _c.TISGetInputSourceProperty(
+            ct.c_void_p(src), ct.c_void_p(propKey))
+        layoutPtr = _f.CFDataGetBytePtr(ct.c_void_p(data))
+        if not layoutPtr:
+            _f.CFRelease(ct.c_void_p(src))
+            return ''
+        dead = ct.c_uint32(0)
+        buf = (ct.c_uint16 * 4)()
+        length = ct.c_uint32(0)
+        _c.UCKeyTranslate(
+            ct.c_void_p(layoutPtr),
+            ct.c_uint16(keyCode),
+            ct.c_uint16(3),   # kUCKeyActionDisplay
+            ct.c_uint32(0),   # no modifier flags
+            ct.c_uint32(0),   # keyboard type
+            ct.c_uint32(0),
+            ct.byref(dead),
+            ct.c_uint32(4),
+            ct.byref(length),
+            buf,
+        )
+        _f.CFRelease(ct.c_void_p(src))
+        if length.value:
+            return ''.join(
+                chr(buf[i]) for i in range(length.value)).lower()
+    except Exception:
+        pass
+    return ''
+
+
+_KEY_DISPLAY = {
+    '\uf700': '↑',  '\uf701': '↓',  '\uf702': '←',  '\uf703': '→',
+    '\uf704': 'F1', '\uf705': 'F2', '\uf706': 'F3', '\uf707': 'F4',
+    '\uf708': 'F5', '\uf709': 'F6', '\uf70a': 'F7', '\uf70b': 'F8',
+    '\uf70c': 'F9', '\uf70d': 'F10','\uf70e': 'F11','\uf70f': 'F12',
+    '\uf710': 'F13','\uf711': 'F14','\uf712': 'F15',
+    '\uf728': '⌦',  '\uf729': '↖',  '\uf72b': '↘',
+    '\uf72c': '⇞',  '\uf72d': '⇟',
+    '\x7f':   '⌫',  '\r': '↩', '\t': '⇥', ' ': 'Space',
+}
+
+
 def loadConfig():
     if CONFIG_PATH.exists():
         try:
@@ -169,7 +232,8 @@ def hotkeyToStr(hotkey):
     for mod in ['ctrl', 'alt', 'shift', 'cmd']:
         if hotkey.get(mod):
             parts.append({'ctrl': '⌃', 'alt': '⌥', 'shift': '⇧', 'cmd': '⌘'}[mod])
-    parts.append(hotkey.get('key', '').upper())
+    key = hotkey.get('key', '')
+    parts.append(_KEY_DISPLAY.get(key) or key.upper())
     return ''.join(parts)
 
 
@@ -195,6 +259,8 @@ class HotkeyRecorder:
     def _handle(self, nsEv):
         flags = int(nsEv.modifierFlags()) & _MOD_MASK
         char = (nsEv.charactersIgnoringModifiers() or '').lower()
+        if flags & _MOD_ALT:
+            char = _baseCharForKeyCode(nsEv.keyCode()) or char
         if not char:
             return
         if nsEv.keyCode() == 53 and not flags:
@@ -388,6 +454,55 @@ class ShortcutRow(NSView):
         self.shortcut['hotkey'] = hotkey
         self.hotkeyBtn.setTitle_(hotkeyToStr(hotkey))
         self.delegate.shortcutChanged()
+        dupeApps = [
+            sc.get('app', '') for sc in self.delegate.shortcuts
+            if sc.get('hotkey') == hotkey and sc.get('app')
+        ]
+        if len(dupeApps) > 1:
+            self.showDuplicateWarning(dupeApps)
+
+    @objc.python_method
+    def showDuplicateWarning(self, apps):
+        if hasattr(self, '_warnLabel') and self._warnLabel:
+            self._warnLabel.removeFromSuperview()
+            self._warnLabel = None
+        text = f'⚠️ Duplicate keybind for {", ".join(apps)}'
+        btnRect = self.convertRect_toView_(
+            self.hotkeyBtn.frame(),
+            self.window().contentView())
+        w, h = 300, 28
+        x = btnRect.origin.x + (btnRect.size.width - w) / 2
+        y = btnRect.origin.y + btnRect.size.height + 6
+        popup = ClickableButton.alloc().initWithFrame_(((x, y), (w, h)))
+        popup.setBordered_(False)
+        popup.setWantsLayer_(True)
+        popup.layer().setBackgroundColor_(
+            NSColor.colorWithRed_green_blue_alpha_(
+                0.75, 0.40, 0.05, 0.95).CGColor())
+        popup.layer().setCornerRadius_(5.0)
+        _para = NSMutableParagraphStyle.alloc().init()
+        _para.setAlignment_(2)
+        popup.setAttributedTitle_(
+            NSAttributedString.alloc().initWithString_attributes_(
+                text, {
+                    NSForegroundColorAttributeName: NSColor.whiteColor(),
+                    NSFontAttributeName: NSFont.systemFontOfSize_(12),
+                    NSParagraphStyleAttributeName: _para,
+                }))
+
+        def _remove():
+            if hasattr(self, '_warnLabel') and self._warnLabel:
+                self._warnLabel.removeFromSuperview()
+                self._warnLabel = None
+
+        warnTarget = ButtonTarget.alloc().initWithCallback_(_remove)
+        popup.setTarget_(warnTarget)
+        popup.setAction_('action:')
+        self._warnTarget = warnTarget
+        self.window().contentView().addSubview_(popup)
+        self._warnLabel = popup
+        threading.Timer(4.0, lambda: NSOperationQueue.mainQueue()
+            .addOperationWithBlock_(_remove)).start()
 
     @objc.python_method
     def enabledChanged(self):
@@ -480,7 +595,7 @@ class ConfigWindow(NSWindow):
         self.setBackgroundColor_(bgColor)
 
         subtitle = NSTextField.labelWithString_(
-            'Focus apps with global keyboard shortcuts')
+            'Switch apps with global keyboard shortcuts')
         subtitle.setFrame_(((0, 415), (602, 20)))
         subtitle.setFont_(NSFont.boldSystemFontOfSize_(13))
         subtitle.setAlignment_(2)
@@ -685,6 +800,8 @@ def _makeTapCallback(app):
                 return None
             flags = int(nsEv.modifierFlags()) & _MOD_MASK
             char = (nsEv.charactersIgnoringModifiers() or '').lower()
+            if flags & _MOD_ALT:
+                char = _baseCharForKeyCode(nsEv.keyCode()) or char
             if not char:
                 return event
             match = app.hotkeyMap.get((
