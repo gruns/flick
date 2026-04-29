@@ -147,57 +147,6 @@ def _cgNumForAxWin(win):
     return int(winID.value)
 
 
-def _baseCharForKeyCode(keyCode):
-    '''Return the base character for a keycode using UCKeyTranslate,
-    ignoring all modifiers. Works with any keyboard layout.'''
-    import ctypes as ct
-    try:
-        _c = ct.cdll.LoadLibrary(
-            '/System/Library/Frameworks/Carbon.framework/Carbon')
-        _f = ct.cdll.LoadLibrary(
-            '/System/Library/Frameworks/CoreFoundation'
-            '.framework/CoreFoundation')
-        _c.TISCopyCurrentKeyboardLayoutInputSource.restype = ct.c_void_p
-        _c.TISGetInputSourceProperty.restype = ct.c_void_p
-        _c.TISGetInputSourceProperty.argtypes = [ct.c_void_p, ct.c_void_p]
-        _f.CFDataGetBytePtr.restype = ct.c_void_p
-        _f.CFDataGetBytePtr.argtypes = [ct.c_void_p]
-        _f.CFRelease.argtypes = [ct.c_void_p]
-        src = _c.TISCopyCurrentKeyboardLayoutInputSource()
-        if not src:
-            return ''
-        propKey = ct.c_void_p.in_dll(
-            _c, 'kTISPropertyUnicodeKeyLayoutData').value
-        data = _c.TISGetInputSourceProperty(
-            ct.c_void_p(src), ct.c_void_p(propKey))
-        layoutPtr = _f.CFDataGetBytePtr(ct.c_void_p(data))
-        if not layoutPtr:
-            _f.CFRelease(ct.c_void_p(src))
-            return ''
-        dead = ct.c_uint32(0)
-        buf = (ct.c_uint16 * 4)()
-        length = ct.c_uint32(0)
-        _c.UCKeyTranslate(
-            ct.c_void_p(layoutPtr),
-            ct.c_uint16(keyCode),
-            ct.c_uint16(3),   # kUCKeyActionDisplay
-            ct.c_uint32(0),   # no modifier flags
-            ct.c_uint32(0),   # keyboard type
-            ct.c_uint32(0),
-            ct.byref(dead),
-            ct.c_uint32(4),
-            ct.byref(length),
-            buf,
-        )
-        _f.CFRelease(ct.c_void_p(src))
-        if length.value:
-            return ''.join(
-                chr(buf[i]) for i in range(length.value)).lower()
-    except Exception:
-        pass
-    return ''
-
-
 _KEY_DISPLAY = {
     '\uf700': '↑',  '\uf701': '↓',  '\uf702': '←',  '\uf703': '→',
     '\uf704': 'F1', '\uf705': 'F2', '\uf706': 'F3', '\uf707': 'F4',
@@ -260,7 +209,8 @@ class HotkeyRecorder:
         flags = int(nsEv.modifierFlags()) & _MOD_MASK
         char = (nsEv.charactersIgnoringModifiers() or '').lower()
         if flags & _MOD_ALT:
-            char = _baseCharForKeyCode(nsEv.keyCode()) or char
+            char = (nsEv.charactersByApplyingModifiers_(0)
+                    or '').lower() or char
         if not char:
             return
         if nsEv.keyCode() == 53 and not flags:
@@ -801,7 +751,8 @@ def _makeTapCallback(app):
             flags = int(nsEv.modifierFlags()) & _MOD_MASK
             char = (nsEv.charactersIgnoringModifiers() or '').lower()
             if flags & _MOD_ALT:
-                char = _baseCharForKeyCode(nsEv.keyCode()) or char
+                char = (nsEv.charactersByApplyingModifiers_(0)
+                        or '').lower() or char
             if not char:
                 return event
             match = app.hotkeyMap.get((
