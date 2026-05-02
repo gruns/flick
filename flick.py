@@ -1026,6 +1026,14 @@ class FlickApp(rumps.App):
             NSOperationQueue.mainQueue().addOperationWithBlock_(_activate)
             done.wait(timeout=1.0)
 
+            # Requery AXMainWindow post-activation. Some apps (notably
+            # Chrome) ignore AXRaise on cached or pre-activation refs;
+            # a freshly queried window raises reliably.
+            errF, freshMain = AXUIElementCopyAttributeValue(
+                appRef, 'AXMainWindow', None)
+            if errF == kAXErrorSuccess and freshMain:
+                target = freshMain
+
             AXUIElementSetAttributeValue(
                 target, 'AXMain', _kCFBooleanTrue)
             AXUIElementPerformAction(target, 'AXRaise')
