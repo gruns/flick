@@ -773,9 +773,10 @@ def _makeTapCallback(app):
 class FlickApp(rumps.App):
     '''Menu bar app for Flick.'''
 
-    def __init__(self):
+    def __init__(self, verbose=False):
         super().__init__('Flick', icon=_iconPath(), quit_button=None,
                          template=True)
+        self.verbose = verbose
 
         from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
         NSApplication.sharedApplication().setActivationPolicy_(
@@ -957,6 +958,7 @@ class FlickApp(rumps.App):
 
     @objc.python_method
     def doFlick(self, appName, centerMouse):
+        t0 = _time.perf_counter()
         try:
             lower = appName.lower()
             app = self.appCache.get(lower)
@@ -1039,6 +1041,10 @@ class FlickApp(rumps.App):
             AXUIElementPerformAction(target, 'AXRaise')
             AXUIElementSetAttributeValue(
                 target, 'AXFocused', _kCFBooleanTrue)
+
+            if self.verbose:
+                ms = (_time.perf_counter() - t0) * 1000
+                print(f'{appName}\t{ms:.1f}ms', flush=True)
         except Exception as e:
             rumps.notification('Flick', 'Error', str(e))
 
@@ -1074,7 +1080,8 @@ Usage: flick [options]
 
 Options:
   -h, --help      show this message and exit
-  -v, --version   show version and exit
+  -v, --verbose   print flick speeds: (app name, ms to flick)
+      --version   show version and exit
 
 Flick runs as a menu bar app. Click the 🎯 icon in the menu bar to
 configure global keyboard shortcuts that focus any app and center the
@@ -1086,9 +1093,10 @@ def main():
     if '-h' in sys.argv or '--help' in sys.argv:
         print(_HELP)
         return
-    if '-v' in sys.argv or '--version' in sys.argv:
+    if '--version' in sys.argv:
         print(f'flick {_VERSION}')
         return
+    verbose = '-v' in sys.argv or '--verbose' in sys.argv
 
     print('Starting flick... click 🎯 in the menu bar to configure.')
     if not isAccessibilityEnabled():
@@ -1097,7 +1105,7 @@ def main():
             'Grant access in System Settings > Privacy & Security > '
             'Accessibility, then restart Flick.')
 
-    FlickApp().run()
+    FlickApp(verbose=verbose).run()
 
 
 if __name__ == '__main__':
