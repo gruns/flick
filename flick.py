@@ -42,7 +42,7 @@ from Foundation import NSNumber
 from Quartz import (
     CGWindowListCopyWindowInfo, CGWarpMouseCursorPosition,
     kCGWindowListOptionOnScreenOnly, kCGWindowListExcludeDesktopElements,
-    kCGNullWindowID,
+    kCGWindowListOptionAll, kCGNullWindowID,
     CGEventTapCreate, CGEventTapEnable, CGEventMaskBit,
     CFMachPortCreateRunLoopSource,
     kCGSessionEventTap, kCGHeadInsertEventTap,
@@ -873,6 +873,8 @@ class FlickApp(rumps.App):
         _cf.CFRelease.argtypes = [c_void_p]
         _cf.CFRunLoopGetMain.restype = c_void_p
         _cf.CFRunLoopAddSource.argtypes = [c_void_p, c_void_p, c_void_p]
+        _cf.CFRunLoopRemoveSource.argtypes = [
+            c_void_p, c_void_p, c_void_p]
 
         UTF8 = 0x08000100
         kCommonModes = c_void_p.in_dll(_cf, 'kCFRunLoopCommonModes')
@@ -914,7 +916,21 @@ class FlickApp(rumps.App):
                 obs.value, appRef_ct, kWinChanged, None)
             src = _hi.AXObserverGetRunLoopSource(obs.value)
             _cf.CFRunLoopAddSource(mainLoop, src, kCommonModes)
-            _observers[pid] = (obs, cb, appRef_py)
+            _observers[pid] = (obs, cb, appRef_py, src, appRef_ct)
+
+        def _unregisterApp(pid):
+            for key in [k for k in focusHistory if k[0] == pid]:
+                del focusHistory[key]
+            for name in [n for n, a in self.appCache.items()
+                         if a.processIdentifier() == pid]:
+                del self.appCache[name]
+            entry = _observers.pop(pid, None)
+            if entry is None:
+                return
+            obs, cb, appRef_py, src, appRef_ct = entry
+            _cf.CFRunLoopRemoveSource(mainLoop, src, kCommonModes)
+            _cf.CFRelease(obs)
+            _cf.CFRelease(c_void_p(appRef_ct))
 
         def _retryRecord(pid, attempts=5):
             if not attempts:
@@ -956,6 +972,38 @@ class FlickApp(rumps.App):
                 'NSWorkspaceDidActivateApplicationNotification',
                 None, None, _onActivate))
 
+        def _onTerminate(notif):
+            try:
+                nsApp = notif.userInfo().get(
+                    'NSWorkspaceApplicationKey')
+                if nsApp:
+                    _unregisterApp(nsApp.processIdentifier())
+            except Exception:
+                pass
+
+        self._terminateObserver = (
+            _workspace.notificationCenter()
+            .addObserverForName_object_queue_usingBlock_(
+                'NSWorkspaceDidTerminateApplicationNotification',
+                None, None, _onTerminate))
+
+    @objc.python_method
+    def _pruneDeadWindows(self, pid):
+        '''Drop focusHistory entries whose windows no longer
+        exist. A dead ref otherwise wins the recency pick and
+        every AX call on it fails silently.'''
+        liveNums = set()
+        for info in CGWindowListCopyWindowInfo(
+                kCGWindowListOptionAll, kCGNullWindowID) or []:
+            if info.get('kCGWindowOwnerPID') == pid:
+                liveNums.add(info.get('kCGWindowNumber'))
+        stale = [
+            key for key in self.focusHistory
+            if key[0] == pid and key[1] not in liveNums
+        ]
+        for key in stale:
+            del self.focusHistory[key]
+
     @objc.python_method
     def doFlick(self, appName, centerMouse):
         t0 = _time.perf_counter()
@@ -981,28 +1029,26 @@ class FlickApp(rumps.App):
             pid = app.processIdentifier()
             appRef = AXUIElementCreateApplication(pid)
 
+            self._pruneDeadWindows(pid)
+
             # Pick the most recently focused window from history
             bestTime = -1
             target = None
-            targetCgNum = None
             for (p, cgNum), (t, ref) in self.focusHistory.items():
                 if p == pid and t > bestTime:
                     bestTime = t
                     target = ref
-                    targetCgNum = cgNum
 
             # No history — fall back to AXMainWindow
             if target is None:
                 errM, mainWin = AXUIElementCopyAttributeValue(
                     appRef, 'AXMainWindow', None)
-                if errM != kAXErrorSuccess or not mainWin:
-                    return
-                target = mainWin
-                targetCgNum = _cgNumForAxWin(mainWin)
+                if errM == kAXErrorSuccess and mainWin:
+                    target = mainWin
 
             # Center mouse before activation (position known before
             # Space switch; centering first avoids a race condition)
-            if centerMouse:
+            if centerMouse and target is not None:
                 ep, posVal = AXUIElementCopyAttributeValue(
                     target, 'AXPosition', None)
                 es, sizeVal = AXUIElementCopyAttributeValue(
@@ -1020,13 +1066,36 @@ class FlickApp(rumps.App):
             done = threading.Event()
             def _activate(a=app):
                 fromApp = _workspace.frontmostApplication()
+                activated = False
                 if fromApp and hasattr(a, 'activateFromApplication_'):
-                    a.activateFromApplication_(fromApp)
-                else:
+                    activated = a.activateFromApplication_(fromApp)
+                if not activated:
                     a.activateWithOptions_(2)
                 done.set()
             NSOperationQueue.mainQueue().addOperationWithBlock_(_activate)
             done.wait(timeout=1.0)
+
+            def isFrontmost():
+                front = _workspace.frontmostApplication()
+                return (front is not None
+                        and front.processIdentifier() == pid)
+
+            deadline = _time.perf_counter() + 0.4
+            while (not isFrontmost()
+                   and _time.perf_counter() < deadline):
+                _time.sleep(0.01)
+
+            # macOS cooperative activation sometimes refuses
+            # requests from a long-running background process.
+            # AXFrontmost is honored regardless because flick is
+            # accessibility-trusted.
+            if not isFrontmost():
+                AXUIElementSetAttributeValue(
+                    appRef, 'AXFrontmost', _kCFBooleanTrue)
+                deadline = _time.perf_counter() + 0.4
+                while (not isFrontmost()
+                       and _time.perf_counter() < deadline):
+                    _time.sleep(0.01)
 
             # Requery AXMainWindow post-activation. Some apps (notably
             # Chrome) ignore AXRaise on cached or pre-activation refs;
@@ -1036,11 +1105,14 @@ class FlickApp(rumps.App):
             if errF == kAXErrorSuccess and freshMain:
                 target = freshMain
 
-            AXUIElementSetAttributeValue(
-                target, 'AXMain', _kCFBooleanTrue)
-            AXUIElementPerformAction(target, 'AXRaise')
-            AXUIElementSetAttributeValue(
-                target, 'AXFocused', _kCFBooleanTrue)
+            if target is not None:
+                AXUIElementSetAttributeValue(
+                    target, 'AXMain', _kCFBooleanTrue)
+                AXUIElementPerformAction(target, 'AXRaise')
+                AXUIElementSetAttributeValue(
+                    appRef, 'AXFocusedWindow', target)
+                AXUIElementSetAttributeValue(
+                    target, 'AXFocused', _kCFBooleanTrue)
 
             if self.verbose:
                 ms = (_time.perf_counter() - t0) * 1000
