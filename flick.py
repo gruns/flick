@@ -794,6 +794,8 @@ class FlickApp(rumps.App):
         self._tapSource = None
         self._tapCallback = None
         self.focusHistory = {}  # {(pid, cgNum): (timestamp, axWindowRef)}
+        self._awaitedPid = None
+        self._activationEvent = None
         self._focusObserver = None
         self._axObservers = {}  # pid -> (obs, cb, appRef) kept alive
         self.setupHotkeys()
@@ -961,8 +963,14 @@ class FlickApp(rumps.App):
             try:
                 nsApp = notif.userInfo().get(
                     'NSWorkspaceApplicationKey')
-                if nsApp and nsApp.activationPolicy() == 0:
-                    _retryRecord(nsApp.processIdentifier())
+                if not nsApp:
+                    return
+                pid = nsApp.processIdentifier()
+                event = self._activationEvent
+                if event is not None and pid == self._awaitedPid:
+                    event.set()
+                if nsApp.activationPolicy() == 0:
+                    _retryRecord(pid)
             except Exception:
                 pass
 
@@ -1063,6 +1071,17 @@ class FlickApp(rumps.App):
                         w, h = float(sm.group(1)), float(sm.group(2))
                         CGWarpMouseCursorPosition((x + w / 2, y + h / 2))
 
+            def isFrontmost():
+                front = _workspace.frontmostApplication()
+                return (front is not None
+                        and front.processIdentifier() == pid)
+
+            # Awaited pid must be set before dispatching so the
+            # activation notification can't slip by unnoticed
+            activatedEvent = threading.Event()
+            self._activationEvent = activatedEvent
+            self._awaitedPid = pid
+
             done = threading.Event()
             def _activate(a=app):
                 fromApp = _workspace.frontmostApplication()
@@ -1075,27 +1094,20 @@ class FlickApp(rumps.App):
             NSOperationQueue.mainQueue().addOperationWithBlock_(_activate)
             done.wait(timeout=1.0)
 
-            def isFrontmost():
-                front = _workspace.frontmostApplication()
-                return (front is not None
-                        and front.processIdentifier() == pid)
-
-            deadline = _time.perf_counter() + 0.4
-            while (not isFrontmost()
-                   and _time.perf_counter() < deadline):
-                _time.sleep(0.01)
-
-            # macOS cooperative activation sometimes refuses
-            # requests from a long-running background process.
-            # AXFrontmost is honored regardless because flick is
-            # accessibility-trusted.
             if not isFrontmost():
-                AXUIElementSetAttributeValue(
-                    appRef, 'AXFrontmost', _kCFBooleanTrue)
-                deadline = _time.perf_counter() + 0.4
-                while (not isFrontmost()
-                       and _time.perf_counter() < deadline):
-                    _time.sleep(0.01)
+                confirmed = activatedEvent.wait(timeout=0.4)
+                # Timed out: recheck frontmost to tell a missed
+                # notification apart from a refused activation
+                if not confirmed and not isFrontmost():
+                    # macOS cooperative activation sometimes
+                    # refuses requests from a long-running
+                    # background process. AXFrontmost is honored
+                    # regardless because flick is
+                    # accessibility-trusted.
+                    AXUIElementSetAttributeValue(
+                        appRef, 'AXFrontmost', _kCFBooleanTrue)
+                    activatedEvent.wait(timeout=0.4)
+            self._awaitedPid = None
 
             # Requery AXMainWindow post-activation. Some apps (notably
             # Chrome) ignore AXRaise on cached or pre-activation refs;
