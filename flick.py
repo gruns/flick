@@ -40,9 +40,10 @@ def isAccessibilityEnabled():
     return AXIsProcessTrusted()
 from Foundation import NSNumber
 from Quartz import (
-    CGWindowListCopyWindowInfo, CGWarpMouseCursorPosition,
+    CGWindowListCopyWindowInfo, CGWindowListCreateDescriptionFromArray,
+    CGWarpMouseCursorPosition,
     kCGWindowListOptionOnScreenOnly, kCGWindowListExcludeDesktopElements,
-    kCGWindowListOptionAll, kCGNullWindowID,
+    kCGNullWindowID,
     CGEventTapCreate, CGEventTapEnable, CGEventMaskBit,
     CFMachPortCreateRunLoopSource,
     kCGSessionEventTap, kCGHeadInsertEventTap,
@@ -999,18 +1000,23 @@ class FlickApp(rumps.App):
     def _pruneDeadWindows(self, pid):
         '''Drop focusHistory entries whose windows no longer
         exist. A dead ref otherwise wins the recency pick and
-        every AX call on it fails silently.'''
-        liveNums = set()
-        for info in CGWindowListCopyWindowInfo(
-                kCGWindowListOptionAll, kCGNullWindowID) or []:
-            if info.get('kCGWindowOwnerPID') == pid:
-                liveNums.add(info.get('kCGWindowNumber'))
-        stale = [
-            key for key in list(self.focusHistory)
-            if key[0] == pid and key[1] not in liveNums
+        every AX call on it fails silently. Queries only the
+        window IDs in history, not the full window list.'''
+        cgNums = [
+            key[1] for key in list(self.focusHistory)
+            if key[0] == pid
         ]
-        for key in stale:
-            self.focusHistory.pop(key, None)
+        if not cgNums:
+            return
+        described = CGWindowListCreateDescriptionFromArray(cgNums)
+        if described is None:
+            return
+        liveNums = set()
+        for info in described:
+            liveNums.add(info.get('kCGWindowNumber'))
+        for num in cgNums:
+            if num not in liveNums:
+                self.focusHistory.pop((pid, num), None)
 
     @objc.python_method
     def doFlick(self, appName, centerMouse):
