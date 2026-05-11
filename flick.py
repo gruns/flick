@@ -1006,11 +1006,11 @@ class FlickApp(rumps.App):
             if info.get('kCGWindowOwnerPID') == pid:
                 liveNums.add(info.get('kCGWindowNumber'))
         stale = [
-            key for key in self.focusHistory
+            key for key in list(self.focusHistory)
             if key[0] == pid and key[1] not in liveNums
         ]
         for key in stale:
-            del self.focusHistory[key]
+            self.focusHistory.pop(key, None)
 
     @objc.python_method
     def doFlick(self, appName, centerMouse):
@@ -1037,12 +1037,37 @@ class FlickApp(rumps.App):
             pid = app.processIdentifier()
             appRef = AXUIElementCreateApplication(pid)
 
+            def isFrontmost():
+                front = _workspace.frontmostApplication()
+                return (front is not None
+                        and front.processIdentifier() == pid)
+
+            # Awaited pid must be set before dispatching so the
+            # activation notification can't slip by unnoticed
+            activatedEvent = threading.Event()
+            self._activationEvent = activatedEvent
+            self._awaitedPid = pid
+
+            # Dispatch activation first; the prune/pick/centering
+            # below runs while macOS switches apps
+            done = threading.Event()
+            def _activate(a=app):
+                fromApp = _workspace.frontmostApplication()
+                activated = False
+                if fromApp and hasattr(a, 'activateFromApplication_'):
+                    activated = a.activateFromApplication_(fromApp)
+                if not activated:
+                    a.activateWithOptions_(2)
+                done.set()
+            NSOperationQueue.mainQueue().addOperationWithBlock_(_activate)
+
             self._pruneDeadWindows(pid)
 
-            # Pick the most recently focused window from history
+            # Snapshot: the main thread records focus changes into
+            # focusHistory while activation is in flight
             bestTime = -1
             target = None
-            for (p, cgNum), (t, ref) in self.focusHistory.items():
+            for (p, cgNum), (t, ref) in list(self.focusHistory.items()):
                 if p == pid and t > bestTime:
                     bestTime = t
                     target = ref
@@ -1054,8 +1079,9 @@ class FlickApp(rumps.App):
                 if errM == kAXErrorSuccess and mainWin:
                     target = mainWin
 
-            # Center mouse before activation (position known before
-            # Space switch; centering first avoids a race condition)
+            # Center mouse while activation is in flight (window
+            # position is stable across a Space switch, and the
+            # warp lands well before the switch completes)
             if centerMouse and target is not None:
                 ep, posVal = AXUIElementCopyAttributeValue(
                     target, 'AXPosition', None)
@@ -1071,27 +1097,6 @@ class FlickApp(rumps.App):
                         w, h = float(sm.group(1)), float(sm.group(2))
                         CGWarpMouseCursorPosition((x + w / 2, y + h / 2))
 
-            def isFrontmost():
-                front = _workspace.frontmostApplication()
-                return (front is not None
-                        and front.processIdentifier() == pid)
-
-            # Awaited pid must be set before dispatching so the
-            # activation notification can't slip by unnoticed
-            activatedEvent = threading.Event()
-            self._activationEvent = activatedEvent
-            self._awaitedPid = pid
-
-            done = threading.Event()
-            def _activate(a=app):
-                fromApp = _workspace.frontmostApplication()
-                activated = False
-                if fromApp and hasattr(a, 'activateFromApplication_'):
-                    activated = a.activateFromApplication_(fromApp)
-                if not activated:
-                    a.activateWithOptions_(2)
-                done.set()
-            NSOperationQueue.mainQueue().addOperationWithBlock_(_activate)
             done.wait(timeout=1.0)
 
             if not isFrontmost():
