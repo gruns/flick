@@ -1073,10 +1073,12 @@ class FlickApp(rumps.App):
             # focusHistory while activation is in flight
             bestTime = -1
             target = None
+            targetCgNum = None
             for (p, cgNum), (t, ref) in list(self.focusHistory.items()):
                 if p == pid and t > bestTime:
                     bestTime = t
                     target = ref
+                    targetCgNum = cgNum
 
             # No history — fall back to AXMainWindow
             if target is None:
@@ -1084,6 +1086,7 @@ class FlickApp(rumps.App):
                     appRef, 'AXMainWindow', None)
                 if errM == kAXErrorSuccess and mainWin:
                     target = mainWin
+                    targetCgNum = _cgNumForAxWin(mainWin)
 
             # Center mouse while activation is in flight (window
             # position is stable across a Space switch, and the
@@ -1125,10 +1128,21 @@ class FlickApp(rumps.App):
             # a freshly queried window raises reliably.
             errF, freshMain = AXUIElementCopyAttributeValue(
                 appRef, 'AXMainWindow', None)
+            freshNum = None
             if errF == kAXErrorSuccess and freshMain:
+                freshNum = _cgNumForAxWin(freshMain)
                 target = freshMain
 
-            if target is not None:
+            # Activation already raised and focused the app's main
+            # window; the four raise/focus round-trips are only
+            # needed when a different window is the target
+            alreadyFocused = (
+                freshNum is not None
+                and freshNum == targetCgNum
+                and isFrontmost()
+            )
+
+            if target is not None and not alreadyFocused:
                 AXUIElementSetAttributeValue(
                     target, 'AXMain', _kCFBooleanTrue)
                 AXUIElementPerformAction(target, 'AXRaise')
