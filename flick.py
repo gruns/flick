@@ -846,6 +846,9 @@ class FlickApp(rumps.App):
                 self.hotkeyMap[mapKey] = (
                     sc['app'], sc.get('centerMouse', True))
 
+        for appName, _ in self.hotkeyMap.values():
+            self._resolveApp(appName.lower())
+
         self._tapCallback = _makeTapCallback(self)
         tap = CGEventTapCreate(
             kCGSessionEventTap,
@@ -1022,6 +1025,46 @@ class FlickApp(rumps.App):
                 'NSWorkspaceDidTerminateApplicationNotification',
                 None, None, _onTerminate))
 
+        def _onLaunch(notif):
+            try:
+                nsApp = notif.userInfo().get(
+                    'NSWorkspaceApplicationKey')
+                if not nsApp or nsApp.activationPolicy() != 0:
+                    return
+                name = (nsApp.localizedName() or '').lower()
+                for appName, _ in self.hotkeyMap.values():
+                    lower = appName.lower()
+                    cached = self.appCache.get(lower)
+                    if (lower in name
+                            and (cached is None
+                                 or cached.isTerminated())):
+                        self.appCache[lower] = nsApp
+            except Exception:
+                pass
+
+        self._launchObserver = (
+            _workspace.notificationCenter()
+            .addObserverForName_object_queue_usingBlock_(
+                'NSWorkspaceDidLaunchApplicationNotification',
+                None, None, _onLaunch))
+
+    @objc.python_method
+    def _resolveApp(self, lower):
+        matches = [
+            a for a in _workspace.runningApplications()
+            if a.localizedName()
+            and lower in a.localizedName().lower()
+            and a.activationPolicy() == 0
+        ]
+        app = min(
+            matches,
+            key=lambda a: len(a.localizedName()),
+            default=None,
+        )
+        if app:
+            self.appCache[lower] = app
+        return app
+
     @objc.python_method
     def _pruneDeadWindows(self, pid):
         '''Drop focusHistory entries whose windows no longer
@@ -1051,19 +1094,7 @@ class FlickApp(rumps.App):
             lower = appName.lower()
             app = self.appCache.get(lower)
             if app is None or app.isTerminated():
-                matches = [
-                    a for a in _workspace.runningApplications()
-                    if a.localizedName()
-                    and lower in a.localizedName().lower()
-                    and a.activationPolicy() == 0
-                ]
-                app = min(
-                    matches,
-                    key=lambda a: len(a.localizedName()),
-                    default=None,
-                )
-                if app:
-                    self.appCache[lower] = app
+                app = self._resolveApp(lower)
             if not app:
                 return
             pid = app.processIdentifier()
