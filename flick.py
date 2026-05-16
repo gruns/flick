@@ -148,6 +148,22 @@ def _cgNumForAxWin(win):
     return int(winID.value)
 
 
+def _windowCenter(win):
+    ep, posVal = AXUIElementCopyAttributeValue(
+        win, 'AXPosition', None)
+    es, sizeVal = AXUIElementCopyAttributeValue(
+        win, 'AXSize', None)
+    if ep != kAXErrorSuccess or es != kAXErrorSuccess:
+        return None
+    pm = re.search(r'x:([\d.-]+) y:([\d.-]+)', repr(posVal))
+    sm = re.search(r'w:([\d.-]+) h:([\d.-]+)', repr(sizeVal))
+    if not pm or not sm:
+        return None
+    x, y = float(pm.group(1)), float(pm.group(2))
+    w, h = float(sm.group(1)), float(sm.group(2))
+    return (x + w / 2, y + h / 2)
+
+
 _KEY_DISPLAY = {
     '\uf700': '↑',  '\uf701': '↓',  '\uf702': '←',  '\uf703': '→',
     '\uf704': 'F1', '\uf705': 'F2', '\uf706': 'F3', '\uf707': 'F4',
@@ -794,7 +810,8 @@ class FlickApp(rumps.App):
         self._eventTap = None
         self._tapSource = None
         self._tapCallback = None
-        self.focusHistory = {}  # {(pid, cgNum): (timestamp, axWindowRef)}
+        self.focusHistory = {}  # {(pid, cgNum):
+                                #  (timestamp, axWindowRef, center)}
         self._awaitedPid = None
         self._activationEvent = None
         self._focusObserver = None
@@ -884,6 +901,10 @@ class FlickApp(rumps.App):
         mainLoop = _cf.CFRunLoopGetMain()
         kWinChanged = _cf.CFStringCreateWithCString(
             None, b'AXFocusedWindowChanged', UTF8)
+        kWinMoved = _cf.CFStringCreateWithCString(
+            None, b'AXWindowMoved', UTF8)
+        kWinResized = _cf.CFStringCreateWithCString(
+            None, b'AXWindowResized', UTF8)
 
         focusHistory = self.focusHistory
         _observers = self._axObservers
@@ -896,7 +917,8 @@ class FlickApp(rumps.App):
             cgNum = _cgNumForAxWin(win)
             if cgNum is None:
                 return False
-            focusHistory[(pid, cgNum)] = (_time.time(), win)
+            focusHistory[(pid, cgNum)] = (
+                _time.time(), win, _windowCenter(win))
             return True
 
         def _registerApp(pid):
@@ -917,6 +939,10 @@ class FlickApp(rumps.App):
                 return
             _hi.AXObserverAddNotification(
                 obs.value, appRef_ct, kWinChanged, None)
+            _hi.AXObserverAddNotification(
+                obs.value, appRef_ct, kWinMoved, None)
+            _hi.AXObserverAddNotification(
+                obs.value, appRef_ct, kWinResized, None)
             src = _hi.AXObserverGetRunLoopSource(obs.value)
             _cf.CFRunLoopAddSource(mainLoop, src, kCommonModes)
             _observers[pid] = (obs, cb, appRef_py, src, appRef_ct)
@@ -1074,11 +1100,14 @@ class FlickApp(rumps.App):
             bestTime = -1
             target = None
             targetCgNum = None
-            for (p, cgNum), (t, ref) in list(self.focusHistory.items()):
+            targetCenter = None
+            for (p, cgNum), (t, ref, center) in list(
+                    self.focusHistory.items()):
                 if p == pid and t > bestTime:
                     bestTime = t
                     target = ref
                     targetCgNum = cgNum
+                    targetCenter = center
 
             # No history — fall back to AXMainWindow
             if target is None:
@@ -1088,23 +1117,15 @@ class FlickApp(rumps.App):
                     target = mainWin
                     targetCgNum = _cgNumForAxWin(mainWin)
 
-            # Center mouse while activation is in flight (window
-            # position is stable across a Space switch, and the
-            # warp lands well before the switch completes)
+            # Center mouse while activation is in flight. The
+            # cached center makes this IPC-free; the live query
+            # only runs when no geometry was recorded at focus
+            # time (e.g. the AXMainWindow fallback path)
             if centerMouse and target is not None:
-                ep, posVal = AXUIElementCopyAttributeValue(
-                    target, 'AXPosition', None)
-                es, sizeVal = AXUIElementCopyAttributeValue(
-                    target, 'AXSize', None)
-                if ep == kAXErrorSuccess and es == kAXErrorSuccess:
-                    pm = re.search(
-                        r'x:([\d.-]+) y:([\d.-]+)', repr(posVal))
-                    sm = re.search(
-                        r'w:([\d.-]+) h:([\d.-]+)', repr(sizeVal))
-                    if pm and sm:
-                        x, y = float(pm.group(1)), float(pm.group(2))
-                        w, h = float(sm.group(1)), float(sm.group(2))
-                        CGWarpMouseCursorPosition((x + w / 2, y + h / 2))
+                if targetCenter is None:
+                    targetCenter = _windowCenter(target)
+                if targetCenter is not None:
+                    CGWarpMouseCursorPosition(targetCenter)
 
             done.wait(timeout=1.0)
 
