@@ -8,6 +8,10 @@ import json
 import re
 import threading
 import time as _time
+from ctypes import (
+    CDLL, POINTER, Structure, byref, c_bool, c_double, c_uint32,
+    c_void_p,
+)
 from pathlib import Path
 
 import rumps
@@ -31,6 +35,8 @@ from AppKit import NSWorkspace
 from ApplicationServices import (
     AXIsProcessTrusted,
     AXUIElementCreateApplication, AXUIElementCopyAttributeValue,
+    AXUIElementCopyMultipleAttributeValues,
+    AXUIElementCreateSystemWide, AXUIElementSetMessagingTimeout,
     AXUIElementPerformAction, AXUIElementSetAttributeValue,
     kAXErrorSuccess,
 )
@@ -132,36 +138,54 @@ _kCFBooleanTrue = NSNumber.numberWithBool_(True)
 _workspace = NSWorkspace.sharedWorkspace()
 
 
+_hiLib = CDLL(
+    '/System/Library/Frameworks/ApplicationServices.framework'
+    '/Frameworks/HIServices.framework/HIServices')
+_hiLib._AXUIElementGetWindow.argtypes = [c_void_p, POINTER(c_uint32)]
+_hiLib._AXUIElementGetWindow.restype = c_uint32
+_hiLib.AXValueGetValue.argtypes = [c_void_p, c_uint32, c_void_p]
+_hiLib.AXValueGetValue.restype = c_bool
+
+
+class _CGPoint(Structure):
+    _fields_ = [('x', c_double), ('y', c_double)]
+
+
+class _CGSize(Structure):
+    _fields_ = [('w', c_double), ('h', c_double)]
+
+
 def _cgNumForAxWin(win):
-    from ctypes import CDLL, POINTER, byref, c_void_p, c_uint32
-    _hi = CDLL(
-        '/System/Library/Frameworks/ApplicationServices.framework'
-        '/Frameworks/HIServices.framework/HIServices')
-    _hi._AXUIElementGetWindow.argtypes = [c_void_p, POINTER(c_uint32)]
-    _hi._AXUIElementGetWindow.restype = c_uint32
     ptr = objc.pyobjc_id(win)
     if not ptr:
         return None
     winID = c_uint32()
-    if _hi._AXUIElementGetWindow(ptr, byref(winID)) != 0:
+    if _hiLib._AXUIElementGetWindow(ptr, byref(winID)) != 0:
         return None
     return int(winID.value)
 
 
+def _axValueGet(val, valueType, structType):
+    ptr = objc.pyobjc_id(val)
+    if not ptr:
+        return None
+    out = structType()
+    if not _hiLib.AXValueGetValue(ptr, valueType, byref(out)):
+        return None
+    return out
+
+
 def _windowCenter(win):
-    ep, posVal = AXUIElementCopyAttributeValue(
-        win, 'AXPosition', None)
-    es, sizeVal = AXUIElementCopyAttributeValue(
-        win, 'AXSize', None)
-    if ep != kAXErrorSuccess or es != kAXErrorSuccess:
+    '''Fetch window position and size in one AX round-trip.'''
+    err, values = AXUIElementCopyMultipleAttributeValues(
+        win, ['AXPosition', 'AXSize'], 0, None)
+    if err != kAXErrorSuccess or not values or len(values) != 2:
         return None
-    pm = re.search(r'x:([\d.-]+) y:([\d.-]+)', repr(posVal))
-    sm = re.search(r'w:([\d.-]+) h:([\d.-]+)', repr(sizeVal))
-    if not pm or not sm:
+    pos = _axValueGet(values[0], 1, _CGPoint)  # kAXValueCGPointType
+    size = _axValueGet(values[1], 2, _CGSize)  # kAXValueCGSizeType
+    if pos is None or size is None:
         return None
-    x, y = float(pm.group(1)), float(pm.group(2))
-    w, h = float(sm.group(1)), float(sm.group(2))
-    return (x + w / 2, y + h / 2)
+    return (pos.x + size.w / 2, pos.y + size.h / 2)
 
 
 _KEY_DISPLAY = {
@@ -816,6 +840,13 @@ class FlickApp(rumps.App):
         self._activationEvent = None
         self._focusObserver = None
         self._axObservers = {}  # pid -> (obs, cb, appRef) kept alive
+        self._appRefs = {}  # pid -> AXUIElementRef
+
+        # Bound every AX call so a hung app can't stall a flick
+        # (default timeout is 6 seconds)
+        AXUIElementSetMessagingTimeout(
+            AXUIElementCreateSystemWide(), 0.25)
+
         self.setupHotkeys()
         self._startFocusTracking()
 
@@ -951,6 +982,7 @@ class FlickApp(rumps.App):
             _observers[pid] = (obs, cb, appRef_py, src, appRef_ct)
 
         def _unregisterApp(pid):
+            self._appRefs.pop(pid, None)
             for key in [k for k in focusHistory if k[0] == pid]:
                 del focusHistory[key]
             for name in [n for n, a in self.appCache.items()
@@ -1098,7 +1130,10 @@ class FlickApp(rumps.App):
             if not app:
                 return
             pid = app.processIdentifier()
-            appRef = AXUIElementCreateApplication(pid)
+            appRef = self._appRefs.get(pid)
+            if appRef is None:
+                appRef = AXUIElementCreateApplication(pid)
+                self._appRefs[pid] = appRef
 
             def isFrontmost():
                 front = _workspace.frontmostApplication()
